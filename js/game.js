@@ -1104,7 +1104,9 @@ class Game {
           return;
         }
         // 第二次点击：确认删除
+        // 置标记阻止 pagehide/visibilitychange 在卸载时把游戏状态重新写回存档
         clearTimeout(resetTimer);
+        this._resettingSave = true;
         localStorage.removeItem(SAVE_KEY);
         location.reload();
       });
@@ -1266,6 +1268,7 @@ class Game {
 
   /** 保存游戏（玩家状态 + 方块修改 diff），成功返回 true */
   _saveGame() {
+    if (this._resettingSave) return false;   // 正在删除存档，禁止写回
     if (!this.player || !this.world) return false;
     try {
       const p = this.player.position;
