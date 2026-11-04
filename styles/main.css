@@ -234,6 +234,12 @@ html, body {
   color: rgba(255, 120, 120, 0.85);
 }
 
+/* 待确认状态（两步确认） */
+.reset-save.armed {
+  color: rgba(255, 100, 100, 0.95);
+  font-weight: bold;
+}
+
 @keyframes hintBlink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }

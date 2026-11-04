@@ -1084,15 +1084,29 @@ class Game {
       if (document.visibilityState === 'hidden') this._saveGame();
     });
 
-    // 重置存档按钮（开始界面）
+    // 重置存档按钮（开始界面）—— 两步确认，避免使用被 WebView 禁用的 confirm()
     const resetBtn = document.getElementById('resetSaveBtn');
     if (resetBtn) {
+      let resetArmed = false;
+      let resetTimer = null;
       resetBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (confirm('确定删除存档并重新生成世界吗？')) {
-          localStorage.removeItem(SAVE_KEY);
-          location.reload();
+        if (!resetArmed) {
+          // 第一次点击：进入待确认状态，3 秒后自动取消
+          resetArmed = true;
+          resetBtn.textContent = '再点一次确认删除存档';
+          resetBtn.classList.add('armed');
+          resetTimer = setTimeout(() => {
+            resetArmed = false;
+            resetBtn.textContent = '删除存档并重新开始';
+            resetBtn.classList.remove('armed');
+          }, 3000);
+          return;
         }
+        // 第二次点击：确认删除
+        clearTimeout(resetTimer);
+        localStorage.removeItem(SAVE_KEY);
+        location.reload();
       });
     }
   }
