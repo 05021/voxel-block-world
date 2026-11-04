@@ -2,6 +2,8 @@
 
 基于 Three.js 的 3D 像素风格方块世界探索游戏。纯原生 HTML + CSS + ES Module JavaScript 构建，**零依赖、零构建步骤**，克隆即可运行。
 
+> 🎨 本项目使用 **Vibe Coding**（AI 辅助编程）方式制作，从世界生成到机器人 AI 均由人与 AI 结对完成。
+
 ![技术栈](https://img.shields.io/badge/Three.js-r160-blue) ![License](https://img.shields.io/badge/License-MIT-green)
 
 ## 特性
