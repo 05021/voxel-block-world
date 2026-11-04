@@ -10,6 +10,7 @@ import {
   isMobileDevice, getRenderDistance,
 } from './voxel.js';
 import { AnimalManager } from './animals.js';
+import { SoundManager } from './sound.js';
 
 /** 存档相关常量 */
 const SAVE_KEY = 'vbw_save_v1';       // localStorage 存档键名
@@ -115,6 +116,12 @@ class Player {
     const effectiveGravity = inWater ? this.gravity * 0.15 : this.gravity;
     this.velocity.y += effectiveGravity * dt;
 
+    // 声音事件标记（由游戏循环消费后置回）
+    const wasOnGround = this.onGround;
+    this.justJumped = false;
+    this.justLanded = false;
+    this.justStepped = false;
+
     // 水中游泳：按住空格上浮
     if (inWater && (this.keys['Space'] || this.keys['KeyK'])) {
       this.velocity.y = 3;
@@ -125,6 +132,7 @@ class Player {
     if (!inWater && (this.keys['Space'] || this.keys['KeyK']) && this.onGround) {
       this.velocity.y = this.jumpSpeed;
       this.onGround = false;
+      this.justJumped = true;
     }
 
     // 水中移动减速
@@ -134,6 +142,7 @@ class Player {
     }
 
     // 逐轴移动并进行碰撞检测
+    const fallSpeed = this.velocity.y;   // 碰撞会把速度清零，提前记录用于落地音量
     this.onGround = false;
 
     // X轴
@@ -147,6 +156,23 @@ class Player {
     // Z轴
     this.position.z += this.velocity.z * dt;
     this._resolveCollision('z');
+
+    // 落地检测：从空中落地且下落速度较大
+    if (!wasOnGround && this.onGround && fallSpeed < -5) {
+      this.justLanded = true;
+      this._landSpeed = fallSpeed;
+    }
+
+    // 脚步：在地面上按移动距离累计触发
+    if (this.onGround && !inWater) {
+      this._stepDist = (this._stepDist || 0) + Math.hypot(this.velocity.x, this.velocity.z) * dt;
+      if (this._stepDist >= 2.2) {
+        this._stepDist = 0;
+        this.justStepped = true;
+      }
+    } else {
+      this._stepDist = 0;
+    }
 
     // 防止掉出世界
     if (this.position.y < -10) {
@@ -564,6 +590,7 @@ class TouchController {
         e.preventDefault();
         e.stopPropagation();
         const ok = this.player.placeBlock();
+        if (ok) this.sound.place();
         _flashBtn(btnPlace, !ok);
         if (!ok) _haptic(10);
       };
@@ -575,6 +602,7 @@ class TouchController {
         e.preventDefault();
         e.stopPropagation();
         const ok = this.player.breakBlock();
+        if (ok) this.sound.break_();
         _flashBtn(btnBreak, !ok);
         if (!ok) _haptic(10);
       };
@@ -628,6 +656,7 @@ class Game {
     this.highlight = null;
     this.touchController = null;
     this.animalManager = null;
+    this.sound = new SoundManager();
 
     // 帧率统计
     this.clock = new THREE.Clock();
@@ -928,6 +957,11 @@ class Game {
 
   /** 绑定事件监听 */
   _initEvents() {
+    // 音频解锁：浏览器要求首次用户手势后才能发声（init 幂等，可重复调用）
+    const unlockSound = () => this.sound.init();
+    document.addEventListener('pointerdown', unlockSound);
+    document.addEventListener('keydown', unlockSound);
+
     // 键盘事件（桌面端 + 移动端外接键盘通用）
     document.addEventListener('keydown', (e) => {
       this.player.keys[e.code] = true;
@@ -960,6 +994,15 @@ class Game {
       if (e.code === 'Digit0' || e.code === 'Numpad0') {  // 0 重置视野
         this._resetFOV();
       }
+
+      // M 键切换音效开关
+      if (e.code === 'KeyM') {
+        const muted = this.sound.toggleMute();
+        const nameEl = this.ui.selectedBlockName;
+        const prev = nameEl.textContent;
+        nameEl.textContent = muted ? '音效: 关 (M)' : '音效: 开 (M)';
+        setTimeout(() => { nameEl.textContent = prev; }, 1200);
+      }
     });
 
     document.addEventListener('keyup', (e) => {
@@ -976,9 +1019,9 @@ class Game {
     document.addEventListener('mousedown', (e) => {
       if (!this.isPointerLocked) return;
       if (e.button === 0) {
-        this.player.placeBlock();
+        if (this.player.placeBlock()) this.sound.place();
       } else if (e.button === 2) {
-        this.player.breakBlock();
+        if (this.player.breakBlock()) this.sound.break_();
       }
     });
 
@@ -1225,6 +1268,11 @@ class Game {
       this.player.update(dt);
       this.world.update(this.player.position.x, this.player.position.z);
       this.highlight.update(this.player.targetBlock);
+
+      // 消费玩家声音事件
+      if (this.player.justJumped) this.sound.jump();
+      if (this.player.justLanded) this.sound.land(this.player._landSpeed);
+      if (this.player.justStepped) this.sound.step();
     }
 
     // 更新机器人 AI（始终运行，即使暂停状态也让机器人有生命感）
