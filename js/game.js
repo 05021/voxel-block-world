@@ -11,6 +11,7 @@ import {
 } from './voxel.js';
 import { AnimalManager } from './animals.js';
 import { SoundManager } from './sound.js';
+import { DayNightCycle } from './daynight.js';
 
 /** 存档相关常量 */
 const SAVE_KEY = 'vbw_save_v1';       // localStorage 存档键名
@@ -827,7 +828,7 @@ class Game {
     const ambientLight = new THREE.AmbientLight(0xcccccc, 0.7);
     this.scene.add(ambientLight);
 
-    // 方向光（模拟太阳）
+    // 方向光（模拟太阳/月亮）
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
     dirLight.position.set(50, 100, 30);
     this.scene.add(dirLight);
@@ -835,6 +836,11 @@ class Game {
     // 半球光（天空+地面反射）
     const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x556633, 0.3);
     this.scene.add(hemiLight);
+
+    // 昼夜循环（接管天空色、雾色与三种光照的强度）
+    this.dayNight = new DayNightCycle(this.scene, {
+      ambientLight, sunLight: dirLight, hemiLight,
+    });
 
     // 初始化世界并设置渲染距离（若有存档则沿用其中的世界种子）
     this.world = new World(this.scene, this._saveData?.seed ?? 12345);
@@ -1230,6 +1236,7 @@ class Game {
       `FOV: ${this.fov.toFixed(0)}°<br>` +
       `XYZ: ${pos.x.toFixed(1)} / ${pos.y.toFixed(1)} / ${pos.z.toFixed(1)}<br>` +
       `区块: ${cx}, ${cz} | 已加载: ${chunks}<br>` +
+      `时间: ${this.dayNight ? this.dayNight.getTimeString() : '--:--'}<br>` +
       `机器人: ${this.animalManager ? this.animalManager.animals.length : 0} 只`;
 
     // 目标方块提示（已禁用）
@@ -1273,6 +1280,11 @@ class Game {
       if (this.player.justJumped) this.sound.jump();
       if (this.player.justLanded) this.sound.land(this.player._landSpeed);
       if (this.player.justStepped) this.sound.step();
+    }
+
+    // 昼夜循环（始终运行，开始画面背后也能看到天色变化）
+    if (this.dayNight) {
+      this.dayNight.update(dt);
     }
 
     // 更新机器人 AI（始终运行，即使暂停状态也让机器人有生命感）
@@ -1348,4 +1360,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   const game = new Game();
   await game.init();
   game.animate();
+  // 暴露到全局，便于调试与自动化测试（如跳转昼夜时刻）
+  window.__game = game;
 });

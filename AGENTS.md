@@ -17,6 +17,8 @@ js/noise.js         # Simplex 2D 噪声生成器（地形高度图）
 js/voxel.js         # 核心引擎：方块定义、纹理图集、区块管理、世界生成 + 空地装饰 + 设备检测
 js/animals.js       # 机器人实体系统：ScoutBot（轻型侦察机器人）、HeavyBot（重型机器人）体素模型、AI行为
 js/game.js          # 游戏主模块：玩家控制、TouchController、物理系统、游戏循环
+js/sound.js         # 音效系统：WebAudio 程序化合成（放置/破坏/跳跃/落地/脚步、M键静音）
+js/daynight.js      # 昼夜循环：天空渐变、日/月方向光、星空点云（300 秒一昼夜）
 ```
 
 ## 核心模块说明
