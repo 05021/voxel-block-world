@@ -1,0 +1,15 @@
+# 系统文件
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+
+# 本地杂物（未被项目引用，不发布）
+assets/
+11
+
+# 开发工具配置（仅本地使用）
+.coze
