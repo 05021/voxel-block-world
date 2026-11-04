@@ -453,6 +453,7 @@ export class World {
     this.noise = new SimplexNoise(seed);
     this.treeNoise = new SimplexNoise(seed + 777);
     this.chunks = new Map();
+    this.editsByChunk = new Map();  // 玩家修改记录 <"cx,cz", Map<"lx,y,lz", blockType>>（用于存档）
     this.material = null;
     this.pendingChunks = [];
     this.renderDistance = RENDER_DISTANCE;
@@ -499,6 +500,9 @@ export class World {
     const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
     chunk.setBlock(lx, wy, lz, type);
 
+    // 记录玩家修改（用于存档系统）
+    this._recordEdit(cx, cz, lx, wy, lz, type);
+
     if (lx === 0) this._markDirty(cx - 1, cz);
     if (lx === CHUNK_SIZE - 1) this._markDirty(cx + 1, cz);
     if (lz === 0) this._markDirty(cx, cz - 1);
@@ -508,6 +512,55 @@ export class World {
   _markDirty(cx, cz) {
     const chunk = this.chunks.get(this.chunkKey(cx, cz));
     if (chunk) chunk.dirty = true;
+  }
+
+  /* ────────────── 存档系统：玩家修改记录 ────────────── */
+
+  _recordEdit(cx, cz, lx, y, lz, type) {
+    const key = this.chunkKey(cx, cz);
+    let bucket = this.editsByChunk.get(key);
+    if (!bucket) {
+      bucket = new Map();
+      this.editsByChunk.set(key, bucket);
+    }
+    bucket.set(`${lx},${y},${lz}`, type);
+  }
+
+  /** 将某区块的玩家修改应用到区块数据（区块生成后调用） */
+  _applyChunkEdits(chunk) {
+    const bucket = this.editsByChunk.get(this.chunkKey(chunk.cx, chunk.cz));
+    if (!bucket) return;
+    for (const [posKey, type] of bucket) {
+      const [lx, y, lz] = posKey.split(',').map(Number);
+      chunk.setBlock(lx, y, lz, type);
+    }
+  }
+
+  /** 导出所有玩家修改为可序列化数组 [[wx, wy, wz, type], ...] */
+  getEditsArray() {
+    const out = [];
+    for (const [key, bucket] of this.editsByChunk) {
+      const [cx, cz] = key.split(',').map(Number);
+      for (const [posKey, type] of bucket) {
+        const [lx, y, lz] = posKey.split(',').map(Number);
+        out.push([cx * CHUNK_SIZE + lx, y, cz * CHUNK_SIZE + lz, type]);
+      }
+    }
+    return out;
+  }
+
+  /** 从存档导入玩家修改（须在世界生成前调用） */
+  loadEdits(arr) {
+    if (!Array.isArray(arr)) return;
+    for (const [wx, wy, wz, type] of arr) {
+      if (typeof wx !== 'number' || typeof wy !== 'number' || typeof wz !== 'number') continue;
+      if (wy < 0 || wy >= CHUNK_HEIGHT) continue;
+      const cx = Math.floor(wx / CHUNK_SIZE);
+      const cz = Math.floor(wz / CHUNK_SIZE);
+      const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+      const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+      this._recordEdit(cx, cz, lx, wy, lz, type);
+    }
   }
 
   // ────────────── 出生点平地区域 ──────────────
@@ -545,6 +598,7 @@ export class World {
           }
         }
       }
+      this._applyChunkEdits(chunk);
       return;
     }
 
@@ -578,6 +632,7 @@ export class World {
     }
 
     this._generateTrees(chunk);
+    this._applyChunkEdits(chunk);
   }
 
   /** 在区块中生成树木 */

@@ -11,6 +11,10 @@ import {
 } from './voxel.js';
 import { AnimalManager } from './animals.js';
 
+/** 存档相关常量 */
+const SAVE_KEY = 'vbw_save_v1';       // localStorage 存档键名
+const AUTOSAVE_INTERVAL = 10;         // 自动保存间隔（秒）
+
 /* ============================================
    玩家类 - 第一人称角色控制
    ============================================ */
@@ -643,6 +647,7 @@ class Game {
       loadingBar: document.getElementById('loadingBar'),
       loadingFill: document.getElementById('loadingFill'),
       controlsPanel: document.getElementById('controlsPanel'),
+      startHint: document.querySelector('.start-hint'),
     };
 
     // 可选方块列表
@@ -655,6 +660,9 @@ class Game {
 
   /** 初始化游戏 */
   async init() {
+    // 读取本地存档（在世界生成前，用于恢复方块修改）
+    this._saveData = this._loadSaveData();
+
     this._initRenderer();
     this._initScene();
     this._initPlayer();
@@ -712,20 +720,35 @@ class Game {
       }
     }
 
-    // 出生点位置（仅设玩家数据，相机保持在预览视角）
-    this._spawnX = 5.4;
-    this._spawnZ = 22.6;
-    // 从上向下扫描出生点地形表面，将玩家放在地表上方
-    this._spawnY = 0;
-    for (let y = 47; y > 0; y--) {
-      if (this.world.getBlock(Math.floor(this._spawnX), y, Math.floor(this._spawnZ)) !== BlockType.AIR) {
-        this._spawnY = y + 1;
-        break;
+    // 出生位置：有存档则恢复，否则扫描出生点地形表面
+    if (this._saveData?.player) {
+      const p = this._saveData.player;
+      this._spawnX = p.x;
+      this._spawnY = p.y;
+      this._spawnZ = p.z;
+      this.player.position.set(p.x, p.y, p.z);
+      this.player.yaw = p.yaw ?? 0;
+      this.player.pitch = p.pitch ?? 0;
+      if (Number.isInteger(p.selectedSlot) && this.blockTypes[p.selectedSlot] !== undefined) {
+        this.selectedSlot = p.selectedSlot;
       }
+      this._updateHotbar();
+      this.ui.startHint.textContent = '检测到存档，点击继续游戏';
+    } else {
+      this._spawnX = 5.4;
+      this._spawnZ = 22.6;
+      // 从上向下扫描出生点地形表面，将玩家放在地表上方
+      this._spawnY = 0;
+      for (let y = 47; y > 0; y--) {
+        if (this.world.getBlock(Math.floor(this._spawnX), y, Math.floor(this._spawnZ)) !== BlockType.AIR) {
+          this._spawnY = y + 1;
+          break;
+        }
+      }
+      this.player.position.set(this._spawnX, this._spawnY, this._spawnZ);
+      this.player.yaw = 0;              // 面朝正北
+      this.player.pitch = -0.1;         // 微俯视
     }
-    this.player.position.set(this._spawnX, this._spawnY, this._spawnZ);
-    this.player.yaw = 0;              // 面朝正北
-    this.player.pitch = -0.1;         // 微俯视
 
     // 相机保持预览视角，等用户点击开始后再切到玩家视角
     // 不做 camera.position 移动，保持背景一直是游戏世界
@@ -784,10 +807,15 @@ class Game {
     const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x556633, 0.3);
     this.scene.add(hemiLight);
 
-    // 初始化世界并设置渲染距离
-    this.world = new World(this.scene);
+    // 初始化世界并设置渲染距离（若有存档则沿用其中的世界种子）
+    this.world = new World(this.scene, this._saveData?.seed ?? 12345);
     this.world.renderDistance = this.renderDistance;
     this.world.init();
+
+    // 恢复存档中的方块修改（须在区块生成前导入）
+    if (this._saveData) {
+      this.world.loadEdits(this._saveData.edits);
+    }
 
     // 初始化机器人生成管理器
     this.animalManager = new AnimalManager(this.scene, this.world, this.isMobile);
@@ -985,6 +1013,7 @@ class Game {
           this._showGameUI(true);
         } else if (this.isRunning) {
           this.ui.pauseScreen.style.display = 'flex';
+          this._saveGame();   // 暂停时保存
         }
       });
 
@@ -1048,6 +1077,40 @@ class Game {
 
     // 窗口尺寸变化
     window.addEventListener('resize', () => this._onResize());
+
+    // 存档：页面隐藏或关闭时保存
+    window.addEventListener('pagehide', () => this._saveGame());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this._saveGame();
+    });
+
+    // 重置存档按钮（开始界面）—— 两步确认，避免使用被 WebView 禁用的 confirm()
+    const resetBtn = document.getElementById('resetSaveBtn');
+    if (resetBtn) {
+      let resetArmed = false;
+      let resetTimer = null;
+      resetBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!resetArmed) {
+          // 第一次点击：进入待确认状态，3 秒后自动取消
+          resetArmed = true;
+          resetBtn.textContent = '再点一次确认删除存档';
+          resetBtn.classList.add('armed');
+          resetTimer = setTimeout(() => {
+            resetArmed = false;
+            resetBtn.textContent = '删除存档并重新开始';
+            resetBtn.classList.remove('armed');
+          }, 3000);
+          return;
+        }
+        // 第二次点击：确认删除
+        // 置标记阻止 pagehide/visibilitychange 在卸载时把游戏状态重新写回存档
+        clearTimeout(resetTimer);
+        this._resettingSave = true;
+        localStorage.removeItem(SAVE_KEY);
+        location.reload();
+      });
+    }
   }
 
   /** 显示/隐藏游戏HUD */
@@ -1172,9 +1235,60 @@ class Game {
     // 渲染
     this.renderer.render(this.scene, this.camera);
 
+    // 自动保存（仅运行中计时）
+    if (this.isRunning) {
+      this._autosaveTimer = (this._autosaveTimer || 0) + dt;
+      if (this._autosaveTimer >= AUTOSAVE_INTERVAL) {
+        this._autosaveTimer = 0;
+        this._saveGame();
+      }
+    }
+
     // 更新UI（降低更新频率）
     if (this.frameCount % 10 === 0) {
       this._updateDebugInfo();
+    }
+  }
+
+  /* ────────────── 存档系统 ────────────── */
+
+  /** 读取本地存档，损坏或缺失时返回 null */
+  _loadSaveData() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1 || !Array.isArray(data.edits)) return null;
+      return data;
+    } catch (e) {
+      console.warn('读取存档失败，将使用新世界', e);
+      return null;
+    }
+  }
+
+  /** 保存游戏（玩家状态 + 方块修改 diff），成功返回 true */
+  _saveGame() {
+    if (this._resettingSave) return false;   // 正在删除存档，禁止写回
+    if (!this.player || !this.world) return false;
+    try {
+      const p = this.player.position;
+      const data = {
+        version: 1,
+        savedAt: Date.now(),
+        seed: this.world.seed,
+        player: {
+          x: p.x, y: p.y, z: p.z,
+          yaw: this.player.yaw,
+          pitch: this.player.pitch,
+          selectedSlot: this.selectedSlot,
+        },
+        edits: this.world.getEditsArray(),
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      console.warn('保存存档失败', e);
+      return false;
     }
   }
 }
