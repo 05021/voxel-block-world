@@ -295,6 +295,36 @@ const FACES = [
 ];
 
 /* ============================================
+   环境光遮蔽 (AO) 预计算表
+   对每个面的每个顶点角，预计算三条采样边偏移：
+   side1 / side2（两条邻边）与 corner（对角），
+   采样点位于面朝向的那一层方块。
+   ============================================ */
+const AO_LEVELS = [0.42, 0.63, 0.82, 1.0];   // 遮蔽等级 → 亮度
+const AO_OFFSETS = FACES.map(face => {
+  const [dx, dy, dz] = face.dir;
+  const axes = [];                            // 面的两个切向轴
+  if (dx === 0) axes.push(0);
+  if (dy === 0) axes.push(1);
+  if (dz === 0) axes.push(2);
+  return face.corners.map(corner => {
+    const p = corner.pos;
+    const mk = (axis) => {
+      const o = [0, 0, 0];
+      o[axis] = p[axis] === 1 ? 1 : -1;
+      return o;
+    };
+    const s1 = mk(axes[0]);
+    const s2 = mk(axes[1]);
+    return {
+      side1: s1,
+      side2: s2,
+      corner: [s1[0] + s2[0], s1[1] + s2[1], s1[2] + s2[2]],
+    };
+  });
+});
+
+/* ============================================
    区块类 (Chunk)
    ============================================ */
 export class Chunk {
@@ -337,14 +367,28 @@ export class Chunk {
     const sPositions = [];
     const sNormals = [];
     const sUvs = [];
+    const sColors = [];
     const sIndices = [];
     let sVc = 0;
 
     const wPositions = [];
     const wNormals = [];
     const wUvs = [];
+    const wColors = [];
     const wIndices = [];
     let wVc = 0;
+
+    // AO 占据检测：目标格是否为不透明方块（区块内走快速路径）
+    const isOccluder = (nx, ny, nz) => {
+      if (ny < 0 || ny >= CHUNK_HEIGHT) return false;
+      let t;
+      if (nx >= 0 && nx < CHUNK_SIZE && nz >= 0 && nz < CHUNK_SIZE) {
+        t = this.getBlock(nx, ny, nz);
+      } else {
+        t = getWorldBlock(wx0 + nx, ny, wz0 + nz);
+      }
+      return t !== BlockType.AIR && t !== BlockType.WATER;
+    };
 
     for (let ly = 0; ly < CHUNK_HEIGHT; ly++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
@@ -356,14 +400,15 @@ export class Chunk {
           if (!texMapping) continue;
 
           const isWater = blockType === BlockType.WATER;
-          let positions, normals, uvs, indices, vertexCount;
+          let positions, normals, uvs, colors, indices, vertexCount;
           if (isWater) {
-            positions = wPositions; normals = wNormals; uvs = wUvs; indices = wIndices; vertexCount = wVc;
+            positions = wPositions; normals = wNormals; uvs = wUvs; colors = wColors; indices = wIndices; vertexCount = wVc;
           } else {
-            positions = sPositions; normals = sNormals; uvs = sUvs; indices = sIndices; vertexCount = sVc;
+            positions = sPositions; normals = sNormals; uvs = sUvs; colors = sColors; indices = sIndices; vertexCount = sVc;
           }
 
-          for (const face of FACES) {
+          for (let fi = 0; fi < FACES.length; fi++) {
+            const face = FACES[fi];
             const nx = lx + face.dir[0];
             const ny = ly + face.dir[1];
             const nz = lz + face.dir[2];
@@ -379,17 +424,45 @@ export class Chunk {
 
             const texIdx = texMapping[face.face];
             const { u0, v0, u1, v1 } = getTexUV(texIdx);
+            const aoOffsets = AO_OFFSETS[fi];
+            const aoVals = [1, 1, 1, 1];
 
-            for (const corner of face.corners) {
+            for (let ci = 0; ci < 4; ci++) {
+              const corner = face.corners[ci];
               positions.push(lx + corner.pos[0], ly + corner.pos[1], lz + corner.pos[2]);
               normals.push(face.dir[0], face.dir[1], face.dir[2]);
               uvs.push(u0 + corner.uv[0] * (u1 - u0), v0 + corner.uv[1] * (v1 - v0));
+
+              // 水面不做 AO（保持通透明亮）
+              if (isWater) {
+                colors.push(1, 1, 1);
+                continue;
+              }
+
+              // 经典体素 AO：检查顶点角两侧与对角的占据情况
+              const ox = nx, oy = ny, oz = nz;   // 面朝向的那一层
+              const off = aoOffsets[ci];
+              const side1 = isOccluder(ox + off.side1[0], oy + off.side1[1], oz + off.side1[2]) ? 1 : 0;
+              const side2 = isOccluder(ox + off.side2[0], oy + off.side2[1], oz + off.side2[2]) ? 1 : 0;
+              const cornerOcc = isOccluder(ox + off.corner[0], oy + off.corner[1], oz + off.corner[2]) ? 1 : 0;
+              const level = (side1 && side2) ? 0 : 3 - (side1 + side2 + cornerOcc);
+              const bright = AO_LEVELS[level];
+              aoVals[ci] = bright;
+              colors.push(bright, bright, bright);
             }
 
-            indices.push(
-              vertexCount, vertexCount + 1, vertexCount + 2,
-              vertexCount, vertexCount + 2, vertexCount + 3
-            );
+            // 根据四角亮度翻转对角线，消除 AO 插值的各向异性伪影
+            if (aoVals[0] + aoVals[2] >= aoVals[1] + aoVals[3]) {
+              indices.push(
+                vertexCount, vertexCount + 1, vertexCount + 2,
+                vertexCount, vertexCount + 2, vertexCount + 3
+              );
+            } else {
+              indices.push(
+                vertexCount + 1, vertexCount + 2, vertexCount + 3,
+                vertexCount + 1, vertexCount + 3, vertexCount
+              );
+            }
             vertexCount += 4;
           }
 
@@ -405,6 +478,7 @@ export class Chunk {
       geo.setAttribute('position', new THREE.Float32BufferAttribute(sPositions, 3));
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(sNormals, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(sUvs, 2));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(sColors, 3));
       geo.setIndex(sIndices);
       geo.computeBoundingSphere();
       this.mesh = new THREE.Mesh(geo, material);
@@ -416,6 +490,7 @@ export class Chunk {
       geo.setAttribute('position', new THREE.Float32BufferAttribute(wPositions, 3));
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(wNormals, 3));
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(wUvs, 2));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(wColors, 3));
       geo.setIndex(wIndices);
       geo.computeBoundingSphere();
       this.waterMesh = new THREE.Mesh(geo, waterMaterial);
@@ -466,12 +541,14 @@ export class World {
       side: THREE.FrontSide,
       transparent: false,
       depthWrite: true,
+      vertexColors: true,   // 启用顶点色（烘焙 AO）
     });
     this.waterMaterial = new THREE.MeshLambertMaterial({
       map: texture,
       side: THREE.FrontSide,
       transparent: false,
       depthWrite: true,
+      vertexColors: true,   // 水面顶点色恒为 1，仅保持几何属性一致
     });
   }
 
